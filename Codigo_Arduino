@@ -1,0 +1,199 @@
+ Name:		DoorController_FEMSA.ino
+ Created:	06-Oct-15 13:32:27
+ Author:	Gustavo
+*/
+
+//Librerias Necesarias para la aplicacion
+#include <SD.h>
+#include <SoftwareSerial.h>
+#include <SPI.h>
+#include <Wire.h>
+#include <RTClib.h>
+
+const String ADD_TAG_CODE = "03003D35343F"; //Codigo de la tarjeta para agregar mas tarjetas
+SoftwareSerial rfid = SoftwareSerial(2, 3); // Declara el lector de tarjetas
+String msg; // Texto para almacenar el valor de la tarjeta leida
+const int cs = 10; // Pin que lee el lector de la tarjeta SD
+char c; // Texto para almacenar cada caracter leido por el RFID
+RTC_Millis RTC; // Declaracion del reloj
+int ledVerde = 7; // Pin para encender el Led Verde
+int ledAmarillo = 6; // Pin para encender el Led Amarillo
+int ledRojo = 5; // Pin para encender el Led Rojo
+unsigned long previousMills; // Valor del tiempo de la ultima vez que se realizo una lectura
+unsigned long currentMills; // Valor del tiempo actual
+
+void setup() {
+	Serial.begin(9600);
+	rfid.begin(9600);
+	RTC.begin(DateTime(__DATE__, __TIME__)); // Configura el reloj del arduino con la hora actual de la computadora
+	pinMode(cs, OUTPUT); // Declaracion de que los pins son de salida
+	pinMode(ledVerde, OUTPUT);
+	pinMode(ledAmarillo, OUTPUT);
+	pinMode(ledRojo, OUTPUT);
+	encenderLed(ledVerde); // Enciende cada led por separado para vaildar que esten funcionando
+	encenderLed(ledAmarillo);
+	encenderLed(ledRojo);
+	
+	if (!SD.begin(cs)) { // Si no se puede encender la tarjeta SD entonces se envia este error
+		Serial.println("Initialization failed");
+		digitalWrite(ledRojo, HIGH);
+	}
+
+}
+
+// Esta funcion corre siempre que el Arduino este encendido o se resetee
+void loop() {
+	msg = leerTarjeta(rfid); // Lee la tarjeta RFID
+	if (msg.equals(ADD_TAG_CODE)) // Valida si el codigo es igual a la tarjeta para agregar mas tarjetas
+		add(); // Invoca a la funcion agregar
+	else if (msg.length() > 12) // Si el codigo no es igual, valida si la tarjeta tiene acceso
+		verificar(msg); // Invoca a la funcion verificar
+	msg = "";
+}
+
+//Esta funcion lee la tarjeta y devuelve el ID de la tarjeta
+String leerTarjeta(SoftwareSerial rfid) {
+	String msg;
+	int interval = 5000; // Cantidad de tiempo que se requiere entre cada lectura de tarjetas
+	previousMills = currentMills;
+	currentMills = millis();
+	while (currentMills - previousMills<interval) // Valida que el tiempo haya transcurrido adecuadamente
+	{
+		currentMills = millis();
+	}
+	rfid.listen();
+	while (msg.length() < 13) {
+		while (rfid.available() > 0) {
+			c = rfid.read();
+			msg += c;
+			if (msg.length() >= 13)
+				exit;
+		}
+	}
+	msg.substring(1, 13);
+	rfid.stopListening();
+	return msg;
+}
+
+// Funcion para agregar la tarjeta
+void add() {
+	boolean continuar = false;
+	String addCard;
+	Serial.print("A cual tarjeta desea concederle acceso?: ");
+	encenderLed(ledAmarillo); // Enciende el led amarillo para que el usuario sepa que espera que se le ingrese una tarjeta adicional
+	while (!continuar) { // La funcion no avanza hasta leer una segunda tarjeta
+		addCard = leerTarjeta(rfid); //Lee la segunda tarjeta
+		digitalWrite(ledAmarillo, LOW);
+		if (!addCard.equals(ADD_TAG_CODE)) { // Valida que el codigo sea diferente a la Tarjeta de Agregar
+			if (buscarTarjeta("tarjetas.txt", addCard)) { // Busca el codigo dentro de la tarjeta SD
+				Serial.println("\nEsta tarjeta ya tiene permiso.");
+				encenderLed(ledAmarillo); // Si la tarjeta se encuentra, es porque la misma ya posee el permiso
+				continuar = true;
+			}
+			else
+			{
+				guardarTarjeta(addCard);
+				continuar = true;
+			}
+		}
+	}
+	addCard="";
+}
+
+
+// Funcion que verifica que el codigo se encuentre dentro de la tarjeta SD
+void verificar(String verCard) {
+	if (buscarTarjeta("tarjetas.txt", verCard)) { // Si la tarjeta se encuentra dentro del SD guarda el registro del ingreso
+		guardarRegistro(verCard);
+	}
+	else {
+		Serial.println("Accesso denegado."); // Si la tarjeta no se encuentra, le niega el acceso al usuario
+		encenderLed(ledRojo);
+	}
+}
+
+// Funcion que devuelve el tiempo actual
+String getTime() {
+	DateTime now = RTC.now();
+	String year = String(now.year(), DEC);
+	String month = String(now.month(), DEC);
+	String day = String(now.day(), DEC);
+	String hour = String(now.hour(), DEC);
+	String min = String(now.minute(), DEC);
+	//Put all the time and date strings into one String
+	String fecha = String(year + "/" + month + "/" + day + "," + hour + ":" + min);
+	return fecha;
+}
+
+//Funcion que guarda el codigo de la tarjeta dentro del SD
+void guardarTarjeta(String data) {
+	Serial.println("Guardando la tarjeta: " + data);
+	File myFile = SD.open("tarjetas.txt", FILE_WRITE);
+	if (myFile) {
+		if (!data.equals(ADD_TAG_CODE) || !data.equals(DEL_TAG_CODE))
+		{
+			myFile.println(data);
+			myFile.close();
+			Serial.println("Tarjeta Guardada");
+			encenderLed(ledVerde); // Si la tarjeta se guarda, entonces enciende la luz verde
+		}
+	}
+	else
+	{
+		Serial.println("Error abriendo el archivo"); // Si no se puede abrir el archivo, entonces enciende la luz roja y amarilla
+		encenderDosLed(ledAmarillo, ledRojo);
+	}
+}
+
+// Funcion que busca la tarjeta dentro de la SD
+boolean buscarTarjeta(String archivo, String data) {
+	File myFile = SD.open(archivo);
+	String tarjeta_lectura;
+	boolean resultado = false;
+	if (myFile) {
+		while (myFile.available()) {
+			tarjeta_lectura = myFile.readStringUntil('\n');
+			tarjeta_lectura = tarjeta_lectura.substring(0, 13);
+			if (data.equals(tarjeta_lectura)) {
+				resultado = true;
+				Serial.println("Tarjeta Encontrada");
+			}
+		}
+		myFile.close();
+	}
+	else {
+		Serial.println("Error abriendo el archivo");
+		encenderDosLed(ledAmarillo,ledRojo);
+	}
+	return resultado;
+}
+
+//Funcion que guarda el registro del acceso en la SD
+void guardarRegistro(String data) {
+	File myFile = SD.open("horas.csv", FILE_WRITE);
+	if (myFile) {
+		myFile.println(data + "," + getTime());
+		myFile.close();
+		Serial.println("Registro de Ingreso almacenado");
+		encenderLed(ledVerde);
+	}
+	else {
+		Serial.println("Error abriendo el archivo"); // Envia un error si no logra abrir el archivo
+		encenderDosLed(ledAmarillo, ledRojo);
+	}
+}
+
+void encenderLed(int pin) {
+	digitalWrite(pin, HIGH);
+	delay(3000);
+	digitalWrite(pin, LOW);
+}
+
+void encenderDosLed(int pin1, int pin2) {
+	digitalWrite(pin1, HIGH);
+	digitalWrite(pin2, HIGH);
+	delay(5000);
+	digitalWrite(pin1, LOW);
+	digitalWrite(pin2, LOW);
+
+}
